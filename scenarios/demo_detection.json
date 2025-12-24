@@ -1,0 +1,40 @@
+{
+  "description": "Demo scenario for deadlock detection - creates guaranteed circular wait",
+  "processes": [
+    {
+      "pid": 1,
+      "priority": 2,
+      "arrival_step": 0,
+      "max_demand": [3, 3],
+      "initial_allocation": [2, 0],
+      "events": [
+        {"step": 1, "type": "request", "resource_type": 1, "amount": 2}
+      ]
+    },
+    {
+      "pid": 2,
+      "priority": 3,
+      "arrival_step": 0,
+      "max_demand": [3, 3],
+      "initial_allocation": [0, 2],
+      "events": [
+        {"step": 2, "type": "request", "resource_type": 0, "amount": 2}
+      ]
+    },
+    {
+      "pid": 3,
+      "priority": 1,
+      "arrival_step": 0,
+      "max_demand": [2, 2],
+      "initial_allocation": [1, 1],
+      "events": [
+        {"step": 1, "type": "request", "resource_type": 0, "amount": 1},
+        {"step": 3, "type": "request", "resource_type": 1, "amount": 1}
+      ]
+    }
+  ],
+  "resources": [
+    {"type_id": 0, "total_instances": 3},
+    {"type_id": 1, "total_instances": 3}
+  ]
+}

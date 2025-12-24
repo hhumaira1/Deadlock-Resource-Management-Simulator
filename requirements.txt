@@ -1,0 +1,10 @@
+# Core dependencies
+numpy>=1.21.0
+
+# Optional dependencies
+colorama>=0.4.4
+matplotlib>=3.5.0
+
+# Development dependencies (optional)
+pytest>=7.0.0
+pytest-cov>=3.0.0
