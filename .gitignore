@@ -46,6 +46,21 @@ Thumbs.db
 results/*.log
 logs/*.log
 *.tmp
+*.bat
+
+# Test outputs (temporary validation files)
+test_*.txt
+test_*.bat
+validation_results.txt
+test_scenarios_temp/
+CRITICAL_*.md
+DEMONSTRATION_*.md
+validation_*.md
+test_*.py
+
+# Keep permanent test files
+!test_sanity.bat
+!run_test.bat
 
 # Project markdown files (keep README.md only)
 PHASE_*.md

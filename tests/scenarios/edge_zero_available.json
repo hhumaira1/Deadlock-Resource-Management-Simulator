@@ -1,0 +1,31 @@
+{
+  "description": "Edge case - zero available resources at start (all allocated initially)",
+  "processes": [
+    {
+      "pid": 1,
+      "priority": 1,
+      "arrival_step": 0,
+      "max_demand": [2, 2],
+      "initial_allocation": [2, 1],
+      "events": [
+        {"step": 2, "type": "release", "resource_type": 0, "amount": 1},
+        {"step": 4, "type": "finish"}
+      ]
+    },
+    {
+      "pid": 2,
+      "priority": 2,
+      "arrival_step": 0,
+      "max_demand": [2, 2],
+      "initial_allocation": [1, 2],
+      "events": [
+        {"step": 1, "type": "request", "resource_type": 0, "amount": 1},
+        {"step": 5, "type": "finish"}
+      ]
+    }
+  ],
+  "resources": [
+    {"type_id": 0, "total_instances": 3},
+    {"type_id": 1, "total_instances": 3}
+  ]
+}

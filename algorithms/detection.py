@@ -44,34 +44,33 @@ def detect_deadlock(system_state: SystemState) -> Tuple[bool, List[int]]:
         Operating System Concepts (10th ed.). Chapter 7: Deadlocks.
     """
     num_processes = system_state.num_processes
-    num_resources = system_state.num_resources
-    
+
     # Step 1: Initialize Work and Finish vectors
     work = system_state.available_vector.copy()
     finish = np.array([False] * num_processes)
-    
+
     # Step 2: Mark already completed/terminated processes
     # SANITY CHECK: TERMINATED processes are treated as finished in detection
     for i, process in enumerate(system_state.processes):
         if process.state in [ProcessState.FINISHED, ProcessState.TERMINATED]:
             finish[i] = True
-    
+
     # Step 3-4: Iteratively find processes that can complete
     # CRITICAL: Use Request[i] (current pending request), NOT Need[i] (max future request)
     found_progress = True
     while found_progress:
         found_progress = False
-        
+
         for i, process in enumerate(system_state.processes):
             # Skip if already finished
             if finish[i]:
                 continue
-            
+
             # Check if Request[i] <= Work (element-wise)
             # A process can complete if its current pending request can be satisfied
             request = system_state.request_matrix[i]
             can_complete = np.all(request <= work)
-            
+
             if can_complete:
                 # Process can complete - add its allocation back to work
                 work += system_state.allocation_matrix[i]
@@ -79,20 +78,20 @@ def detect_deadlock(system_state: SystemState) -> Tuple[bool, List[int]]:
                 found_progress = True
                 # Restart search from beginning for deterministic behavior
                 break
-    
+
     # Step 5: Identify deadlocked processes
     # All processes with finish[i] == False are deadlocked
     deadlocked_pids = []
-    
+
     for i, is_finished in enumerate(finish):
         if not is_finished:
             process = system_state.processes[i]
             deadlocked_pids.append(process.pid)
             # Mark process as deadlocked
             process.state = ProcessState.DEADLOCKED
-    
+
     deadlock_exists = len(deadlocked_pids) > 0
-    
+
     return deadlock_exists, deadlocked_pids
 
 

@@ -4,7 +4,6 @@ Logger utility for the Deadlock & Resource Management Simulator.
 Provides step-by-step logging with verbosity levels.
 """
 
-import sys
 from typing import Optional
 from datetime import datetime
 
@@ -15,7 +14,7 @@ class SimulatorLogger:
     
     Format: "Step X: Process PY requests RZ[n] - GRANTED/DENIED (reason)"
     """
-    
+
     def __init__(self, verbose: bool = False, log_file: Optional[str] = None):
         """
         Initialize logger.
@@ -27,18 +26,18 @@ class SimulatorLogger:
         self.verbose = verbose
         self.log_file = log_file
         self.file_handle = None
-        
+
         if self.log_file:
             self.file_handle = open(self.log_file, 'w', encoding='utf-8')
             self._write_header()
-    
+
     def _write_header(self) -> None:
         """Write log file header."""
         if self.file_handle:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.file_handle.write(f"Simulation Log - {timestamp}\n")
             self.file_handle.write("="*60 + "\n\n")
-    
+
     def log(self, message: str, level: str = "info") -> None:
         """
         Log a message.
@@ -49,17 +48,17 @@ class SimulatorLogger:
         """
         if level == "debug" and not self.verbose:
             return
-        
+
         formatted = self._format_message(message, level)
-        
+
         # Console output
         print(formatted)
-        
+
         # File output
         if self.file_handle:
             self.file_handle.write(formatted + "\n")
             self.file_handle.flush()
-    
+
     def _format_message(self, message: str, level: str) -> str:
         """Format message with level prefix."""
         if level == "error":
@@ -70,11 +69,11 @@ class SimulatorLogger:
             return f"[DEBUG] {message}"
         else:
             return message
-    
+
     def log_step(self, step: int, message: str) -> None:
         """Log a simulation step message."""
         self.log(f"Step {step}: {message}")
-    
+
     def log_request(
         self,
         step: int,
@@ -98,7 +97,7 @@ class SimulatorLogger:
         status = "GRANTED" if granted else "DENIED"
         message = f"P{pid} requests R{resource_type}[{amount}] - {status} ({reason})"
         self.log_step(step, message)
-    
+
     def log_deadlock(self, step: int, deadlocked_pids: list) -> None:
         """
         Log deadlock detection.
@@ -110,7 +109,7 @@ class SimulatorLogger:
         pids_str = ", ".join(f"P{pid}" for pid in deadlocked_pids)
         message = f"DEADLOCK DETECTED - Processes in deadlock: [{pids_str}]"
         self.log_step(step, message)
-    
+
     def log_recovery(
         self,
         step: int,
@@ -132,7 +131,7 @@ class SimulatorLogger:
             f"(priority={priority}, holding {resources_held})"
         )
         self.log_step(step, message)
-    
+
     def log_system_state(self, step: int, state_str: str) -> None:
         """
         Log system state snapshot.
@@ -143,13 +142,13 @@ class SimulatorLogger:
         """
         if self.verbose:
             self.log_step(step, f"System State:\n{state_str}")
-    
+
     def close(self) -> None:
         """Close log file if open."""
         if self.file_handle:
             self.file_handle.close()
             self.file_handle = None
-    
+
     def __del__(self):
         """Cleanup on destruction."""
         self.close()

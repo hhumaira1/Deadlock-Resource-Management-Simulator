@@ -6,8 +6,7 @@ Provides backward compatibility with old requests format.
 """
 
 import json
-from typing import Dict, List, Any, Tuple
-from pathlib import Path
+from typing import Dict, List, Tuple
 
 from models.process import Process, ProcessState
 from models.resource import Resource
@@ -41,38 +40,38 @@ def load_scenario(file_path: str) -> Tuple[SystemState, Dict[int, List[Dict]]]:
         raise ScenarioLoadError(f"Scenario file not found: {file_path}")
     except json.JSONDecodeError as e:
         raise ScenarioLoadError(f"Invalid JSON in scenario file: {e}")
-    
+
     # Validate required fields
     if 'processes' not in data:
         raise ScenarioLoadError("Scenario missing 'processes' field")
     if 'resources' not in data:
         raise ScenarioLoadError("Scenario missing 'resources' field")
-    
+
     # Load resources first (needed for validation)
     resources = _load_resources(data['resources'])
     num_resources = len(resources)
-    
+
     # Load processes
     processes = []
     events_by_step = {}
-    
+
     for proc_data in data['processes']:
         process, proc_events = _load_process(proc_data, num_resources)
         processes.append(process)
-        
+
         # Group events by step
         for event in proc_events:
             step = event['step']
             if step not in events_by_step:
                 events_by_step[step] = []
             events_by_step[step].append({**event, 'pid': process.pid})
-    
+
     # Validate initial allocations don't exceed available resources
     _validate_initial_allocations(processes, resources)
-    
+
     # Create system state
     system_state = SystemState(processes=processes, resources=resources)
-    
+
     return system_state, events_by_step
 
 
@@ -87,20 +86,20 @@ def _load_resources(resource_data: List[Dict]) -> List[Resource]:
         List of Resource objects
     """
     resources = []
-    
+
     for res in resource_data:
         if 'type_id' not in res:
             raise ScenarioLoadError("Resource missing 'type_id' field")
         if 'total_instances' not in res:
             raise ScenarioLoadError(f"Resource {res['type_id']} missing 'total_instances'")
-        
+
         resource = Resource(
             type_id=res['type_id'],
             total_instances=res['total_instances'],
             available_instances=res['total_instances']  # Initially all available
         )
         resources.append(resource)
-    
+
     return sorted(resources, key=lambda r: r.type_id)
 
 
@@ -120,21 +119,21 @@ def _load_process(proc_data: Dict, num_resources: int) -> Tuple[Process, List[Di
     for field in required_fields:
         if field not in proc_data:
             raise ScenarioLoadError(f"Process missing required field: {field}")
-    
+
     # Validate max_demand matches resource count
     if len(proc_data['max_demand']) != num_resources:
         raise ScenarioLoadError(
             f"Process {proc_data['pid']}: max_demand length ({len(proc_data['max_demand'])}) "
             f"does not match resource count ({num_resources})"
         )
-    
+
     # Get initial allocation (defaults to all zeros)
     initial_allocation = proc_data.get('initial_allocation', [0] * num_resources)
     if len(initial_allocation) != num_resources:
         raise ScenarioLoadError(
             f"Process {proc_data['pid']}: initial_allocation length mismatch"
         )
-    
+
     # Validate initial allocation doesn't exceed max_demand
     for i, (alloc, max_d) in enumerate(zip(initial_allocation, proc_data['max_demand'])):
         if alloc > max_d:
@@ -142,7 +141,7 @@ def _load_process(proc_data: Dict, num_resources: int) -> Tuple[Process, List[Di
                 f"Process {proc_data['pid']}: initial_allocation[{i}] ({alloc}) "
                 f"exceeds max_demand[{i}] ({max_d})"
             )
-    
+
     # Create process
     process = Process(
         pid=proc_data['pid'],
@@ -152,10 +151,10 @@ def _load_process(proc_data: Dict, num_resources: int) -> Tuple[Process, List[Di
         allocation=initial_allocation.copy(),
         state=ProcessState.READY
     )
-    
+
     # Load events (or convert old requests format)
     events = _load_events(proc_data, process)
-    
+
     return process, events
 
 
@@ -172,13 +171,13 @@ def _load_events(proc_data: Dict, process: Process) -> List[Dict]:
         List of event dictionaries
     """
     events = []
-    
+
     # New format: events array
     if 'events' in proc_data:
         for event in proc_data['events']:
             _validate_event(event, process)
             events.append(event)
-    
+
     # Old format: requests array (backward compatibility)
     elif 'requests' in proc_data:
         # Convert requests to request events
@@ -191,10 +190,10 @@ def _load_events(proc_data: Dict, process: Process) -> List[Dict]:
             }
             _validate_event(event, process)
             events.append(event)
-        
+
         # Add auto-finish event (when allocation == max_demand)
         # This will be checked dynamically during simulation
-    
+
     return sorted(events, key=lambda e: e['step'])
 
 
@@ -213,9 +212,9 @@ def _validate_event(event: Dict, process: Process) -> None:
         raise ScenarioLoadError(f"Process {process.pid}: event missing 'step' field")
     if 'type' not in event:
         raise ScenarioLoadError(f"Process {process.pid}: event missing 'type' field")
-    
+
     event_type = event['type']
-    
+
     if event_type in ['request', 'release']:
         if 'resource_type' not in event:
             raise ScenarioLoadError(
@@ -225,28 +224,28 @@ def _validate_event(event: Dict, process: Process) -> None:
             raise ScenarioLoadError(
                 f"Process {process.pid}: {event_type} event missing 'amount'"
             )
-        
+
         # Validate resource type
         if event['resource_type'] < 0 or event['resource_type'] >= len(process.max_demand):
             raise ScenarioLoadError(
                 f"Process {process.pid}: invalid resource_type {event['resource_type']}"
             )
-        
+
         # Validate amount
         if event['amount'] <= 0:
             raise ScenarioLoadError(
                 f"Process {process.pid}: {event_type} amount must be positive"
             )
-        
+
         # For requests, check it doesn't exceed max_demand
         if event_type == 'request':
-            resource_type = event['resource_type']
             # We'll validate against current allocation during simulation
-    
+            pass
+
     elif event_type == 'finish':
         # Finish events don't need additional fields
         pass
-    
+
     else:
         raise ScenarioLoadError(
             f"Process {process.pid}: unknown event type '{event_type}'"
@@ -270,11 +269,11 @@ def _validate_initial_allocations(processes: List[Process], resources: List[Reso
     """
     # Calculate total initial allocations per resource type
     total_allocated = [0] * len(resources)
-    
+
     for process in processes:
         for i, amount in enumerate(process.allocation):
             total_allocated[i] += amount
-    
+
     # CRITICAL CHECK: sum(allocation[:,r]) <= total[r] for all r
     for i, resource in enumerate(resources):
         if total_allocated[i] > resource.total_instances:
@@ -283,10 +282,10 @@ def _validate_initial_allocations(processes: List[Process], resources: List[Reso
                 f"exceed total instances ({resource.total_instances}).\n"
                 f"Sum of process allocations for R{i} must be <= {resource.total_instances}"
             )
-        
+
         # Update available instances
         resource.available_instances = resource.total_instances - total_allocated[i]
-        
+
         # Verify calculation
         assert resource.available_instances >= 0, (
             f"Internal error: R{i} available_instances became negative "
@@ -308,5 +307,5 @@ def get_scenario_description(file_path: str) -> str:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return data.get('description', '')
-    except:
+    except Exception:
         return ''

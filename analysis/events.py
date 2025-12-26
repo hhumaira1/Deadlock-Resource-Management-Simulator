@@ -40,11 +40,11 @@ class SimulationEvent:
     amount: Optional[int] = None
     message: str = ""
     reason: str = ""
-    
+
     def __str__(self) -> str:
         """Format event for logging."""
         base = f"Step {self.step}: P{self.process_id}"
-        
+
         if self.event_type == EventType.ALLOCATION:
             return f"{base} requests R{self.resource_type}[{self.amount}] - GRANTED ({self.reason})"
         elif self.event_type == EventType.DENIAL:
@@ -65,23 +65,23 @@ class SimulationEvent:
 class EventLog:
     """Collection of simulation events."""
     events: list = None
-    
+
     def __post_init__(self):
         if self.events is None:
             self.events = []
-    
+
     def add(self, event: SimulationEvent) -> None:
         """Add an event to the log."""
         self.events.append(event)
-    
+
     def get_events_by_type(self, event_type: EventType) -> list:
         """Get all events of a specific type."""
         return [e for e in self.events if e.event_type == event_type]
-    
+
     def get_events_by_step(self, step: int) -> list:
         """Get all events from a specific step."""
         return [e for e in self.events if e.step == step]
-    
+
     def display(self) -> str:
         """Format all events for display."""
         return "\n".join(str(event) for event in self.events)

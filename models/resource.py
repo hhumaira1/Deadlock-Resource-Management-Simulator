@@ -23,7 +23,7 @@ class Resource:
     type_id: int
     total_instances: int
     available_instances: int
-    
+
     def __post_init__(self):
         """Validate resource state."""
         if self.available_instances < 0:
@@ -33,7 +33,7 @@ class Resource:
                 f"Resource {self.type_id}: available ({self.available_instances}) "
                 f"exceeds total ({self.total_instances})"
             )
-    
+
     def allocate(self, amount: int) -> bool:
         """
         Allocate resource instances if available.
@@ -50,7 +50,7 @@ class Resource:
             return False
         self.available_instances -= amount
         return True
-    
+
     def deallocate(self, amount: int) -> None:
         """
         Deallocate (release) resource instances.

@@ -9,16 +9,18 @@ Educational tool for demonstrating deadlock handling strategies.
 
 import argparse
 import sys
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 
 from models.system_state import SystemState
 from models.process import ProcessState
 from utils.scenario_loader import load_scenario, ScenarioLoadError
 from utils.logger import SimulatorLogger
-from algorithms.avoidance import handle_request, retry_pending_requests, is_safe_state
+from algorithms.avoidance import handle_request, retry_pending_requests
 from algorithms.detection import detect_deadlock, should_run_detection
 from algorithms.recovery import recover_from_deadlock
 from analysis.events import EventLog, SimulationEvent, EventType
+from analysis.metrics import SimulationMetrics, format_metrics_report
+from analysis.analyzer import compare_policies, generate_comparison_report
 
 
 def run_simulation(
@@ -26,7 +28,7 @@ def run_simulation(
     scenario_path: str,
     detect_interval: int,
     verbose: bool
-) -> EventLog:
+) -> Tuple[EventLog, SimulationMetrics, str]:
     """
     Run the deadlock simulation with specified policy.
     
@@ -44,53 +46,70 @@ def run_simulation(
         verbose: Enable verbose logging
         
     Returns:
-        EventLog containing all simulation events
+        Tuple of (EventLog, SimulationMetrics, stop_reason) containing all events, metrics, and reason for stopping
     """
     logger = SimulatorLogger(verbose=verbose)
     event_log = EventLog()
-    
+    metrics = SimulationMetrics()
+
     # Load scenario
     try:
         system_state, events_by_step = load_scenario(scenario_path)
     except ScenarioLoadError as e:
         logger.log(f"Failed to load scenario: {e}", "error")
-        return event_log
-    
+        return event_log, metrics, "Scenario load error"
+
+    # Set total processes in metrics
+    metrics.set_total_processes(len(system_state.processes))
+
     logger.log(f"\n{'='*60}")
     logger.log(f"SIMULATION START: {policy.upper()}")
     logger.log(f"Scenario: {scenario_path}")
     logger.log(f"{'='*60}\n")
-    
+
     # Display initial state
     _display_initial_state(system_state, logger)
-    
+
     # Determine maximum step from events
     max_step = max(events_by_step.keys()) if events_by_step else 10
-    
+
+    # Track stop reason
+    stop_reason = "Maximum steps reached"
+
     # Simulation loop
     for step in range(max_step + 5):  # Extra steps for finish/cleanup
         logger.log(f"\n{'-'*60}")
         logger.log(f"Step {step}")
         logger.log(f"{'-'*60}")
-        
+
+        # Record metrics for this step
+        _record_step_metrics(step, system_state, metrics)
+
         # Track which processes have attempted requests this step (max 1 attempt per PID per step)
         attempted_this_step = set()
-        
+
         # Step 1: Apply releases and finishes from scheduled events
         if step in events_by_step:
-            _process_events(step, events_by_step[step], system_state, logger, event_log, policy, verbose, attempted_this_step)
-        
+            _process_events(step, events_by_step[step], system_state, logger,
+                            event_log, policy, verbose, attempted_this_step, metrics)
+
         # Step 2: Retry pending requests (PID order) - skip processes that already attempted this step
-        retry_results = retry_pending_requests(system_state, attempted_this_step, policy)
+        retry_results = retry_pending_requests(system_state, attempted_this_step, policy, step)
         for pid, granted, reason, resource_type, amount in retry_results:
             # Log as retry attempt
             status = "GRANTED" if granted else "DENIED"
             logger.log(f"Step {step}: P{pid} retries pending request R{resource_type}[{amount}] - {status} ({reason})")
-            
+
             # Debug: Show available after decision
             if verbose:
                 logger.log(f"  Available now: {list(system_state.available_vector)}", "debug")
-            
+
+            # Record allocation/denial in metrics
+            if granted:
+                metrics.record_allocation(pid)
+            else:
+                metrics.record_denial(pid)
+
             # CRITICAL: Track all grants in metrics
             event_type = EventType.ALLOCATION if granted else EventType.DENIAL
             event_log.add(SimulationEvent(
@@ -101,23 +120,26 @@ def run_simulation(
                 amount=amount,
                 reason=reason
             ))
-        
+
         # Step 4: Run deadlock detection (depending on detect_interval)
         if policy in ['detection_only', 'detection_with_recovery']:
             if should_run_detection(step, detect_interval):
                 deadlock_exists, deadlocked_pids = detect_deadlock(system_state)
-                
+
                 if deadlock_exists:
                     logger.log(f"\n{'!'*60}")
                     logger.log(f"DEADLOCK DETECTED at Step {step}")
                     logger.log(f"Processes in deadlock: {deadlocked_pids}")
                     logger.log(f"{'!'*60}\n")
-                    
+
+                    # Record deadlock in metrics
+                    metrics.record_deadlock()
+
                     # Log detailed deadlock info
                     for pid in deadlocked_pids:
                         process = next(p for p in system_state.processes if p.pid == pid)
                         logger.log(f"  P{pid}: allocation={process.allocation}, pending={process.current_request}")
-                    
+
                     # Add deadlock event
                     event_log.add(SimulationEvent(
                         step=step,
@@ -125,27 +147,28 @@ def run_simulation(
                         process_id=-1,  # No single process - system-wide event
                         message=f"Deadlock detected - processes: {deadlocked_pids}"
                     ))
-                    
+
                     # For DETECTION_ONLY: halt simulation
                     if policy == 'detection_only':
-                        logger.log(f"\nPolicy: DETECTION_ONLY - Halting simulation")
+                        stop_reason = f"Deadlock detected at step {step} (halting)"
+                        logger.log("\nPolicy: DETECTION_ONLY - Halting simulation")
                         break
-                    
+
                     # For DETECTION_WITH_RECOVERY: perform recovery
                     if policy == 'detection_with_recovery':
-                        logger.log(f"\nPolicy: DETECTION_WITH_RECOVERY - Initiating recovery")
-                        
+                        logger.log("\nPolicy: DETECTION_WITH_RECOVERY - Initiating recovery")
+
                         # Recover from deadlock using termination strategy
                         success, recovery_actions = recover_from_deadlock(
                             deadlocked_pids,
                             system_state,
                             method="terminate"
                         )
-                        
+
                         # Log recovery actions
                         for action in recovery_actions:
                             logger.log(f"  {action}")
-                            
+
                             # Add recovery events to event log
                             if action.startswith("RECOVERY:"):
                                 event_log.add(SimulationEvent(
@@ -154,11 +177,11 @@ def run_simulation(
                                     process_id=-1,  # Multiple processes may be affected
                                     message=action
                                 ))
-                        
+
                         if not success:
-                            logger.log(f"  Recovery failed - halting simulation", "error")
+                            logger.log("  Recovery failed - halting simulation", "error")
                             break
-                        
+
                         # Verify resource conservation after recovery
                         if verbose:
                             _verify_resource_conservation(system_state, logger, step)
@@ -166,14 +189,20 @@ def run_simulation(
                             for i, p in enumerate(system_state.processes):
                                 if any(system_state.request_matrix[i] > 0):
                                     logger.log(f"  P{p.pid} pending: {list(system_state.request_matrix[i])}", "debug")
-                        
+
                         # After recovery, retry all pending requests once
-                        logger.log(f"\n  Retrying pending requests after recovery...")
-                        retry_results = retry_pending_requests(system_state, attempted_this_step, policy)
+                        logger.log("\n  Retrying pending requests after recovery...")
+                        retry_results = retry_pending_requests(system_state, attempted_this_step, policy, step)
                         for pid, granted, reason, resource_type, amount in retry_results:
                             status = "GRANTED" if granted else "DENIED"
                             logger.log(f"  P{pid} retry R{resource_type}[{amount}] - {status} ({reason})")
-                            
+
+                            # Record allocation/denial in metrics
+                            if granted:
+                                metrics.record_allocation(pid)
+                            else:
+                                metrics.record_denial(pid)
+
                             # CRITICAL: Track post-recovery grants in metrics
                             event_type = EventType.ALLOCATION if granted else EventType.DENIAL
                             event_log.add(SimulationEvent(
@@ -186,30 +215,58 @@ def run_simulation(
                             ))
                 else:
                     if verbose:
-                        logger.log(f"  Deadlock check: No deadlock detected", "debug")
-        
+                        logger.log("  Deadlock check: No deadlock detected", "debug")
+
         # Verify resource conservation invariant (debug check)
         if verbose:
             _verify_resource_conservation(system_state, logger, step)
-        
+
         # Display current state
         if verbose:
             _display_state_snapshot(step, system_state, logger)
-        
+
         # Check if simulation should end
         if _all_processes_finished(system_state):
+            stop_reason = "All processes finished"
             logger.log(f"\nAll processes finished at step {step}")
             break
-    
+
+    # Record final waiting times and states for all processes
+    for process in system_state.processes:
+        waiting_time = process.get_waiting_time(step)
+        metrics.record_waiting_time(process.pid, waiting_time)
+
+        # Record final state
+        metrics.record_process_final_state(
+            process.pid,
+            process.state.value,
+            process.allocation,
+            process.current_request
+        )
+
+        # Count completed processes (FINISHED state only)
+        if process.state == ProcessState.FINISHED:
+            metrics.record_completion()
+
     logger.log(f"\n{'='*60}")
     logger.log("SIMULATION COMPLETE")
     logger.log(f"{'='*60}\n")
-    
+
     # Display final statistics
     _display_statistics(system_state, event_log, logger)
-    
+
+    # Display metrics report with policy/scenario info
+    metrics_report = format_metrics_report(
+        metrics,
+        verbose,
+        policy=policy,
+        scenario=scenario_path,
+        stop_reason=stop_reason
+    )
+    logger.log(metrics_report)
+
     logger.close()
-    return event_log
+    return event_log, metrics, stop_reason
 
 
 def _process_events(
@@ -220,7 +277,8 @@ def _process_events(
     event_log: EventLog,
     policy: str,
     verbose: bool,
-    attempted_this_step: set
+    attempted_this_step: set,
+    metrics: SimulationMetrics = None
 ) -> None:
     """
     Process scheduled events for current step.
@@ -234,41 +292,49 @@ def _process_events(
         policy: Current policy
         verbose: Enable verbose output
         attempted_this_step: Set of PIDs that have attempted requests this step
+        metrics: Metrics accumulator (optional)
     """
     # Sort by PID for deterministic execution
     sorted_events = sorted(events, key=lambda e: e['pid'])
-    
+
     for event in sorted_events:
         pid = event['pid']
         event_type = event['type']
-        
+
         # Find process
         process = next((p for p in system_state.processes if p.pid == pid), None)
         if not process:
             logger.log(f"Process P{pid} not found", "error")
             continue
-        
+
         if event_type == 'request':
             resource_type = event['resource_type']
             amount = event['amount']
-            
+
             # Mark that this process attempted a request this step
             attempted_this_step.add(pid)
-            
+
             # Handle request based on policy
             if policy == 'avoidance':
-                granted, reason = handle_request(process, resource_type, amount, system_state)
+                granted, reason = handle_request(process, resource_type, amount, system_state, step)
             else:  # detection_only or detection_with_recovery
                 # Grant if available, no safety check
-                granted, reason = _simple_allocation(process, resource_type, amount, system_state)
-            
+                granted, reason = _simple_allocation(process, resource_type, amount, system_state, step)
+
             logger.log_request(step, pid, resource_type, amount, granted, reason)
-            
+
+            # Record allocation/denial in metrics
+            if metrics:
+                if granted:
+                    metrics.record_allocation(pid)
+                else:
+                    metrics.record_denial(pid)
+
             # Debug: Show available and allocation after decision
             if verbose:
                 logger.log(f"  Available now: {list(system_state.available_vector)}", "debug")
                 logger.log(f"  P{pid} allocation: {process.allocation}", "debug")
-            
+
             evt_type = EventType.ALLOCATION if granted else EventType.DENIAL
             event_log.add(SimulationEvent(
                 step=step,
@@ -278,21 +344,25 @@ def _process_events(
                 amount=amount,
                 reason=reason
             ))
-        
+
         elif event_type == 'release':
             resource_type = event['resource_type']
             amount = event['amount']
-            
+
             # Validate release
             if process.allocation[resource_type] < amount:
-                logger.log(f"P{pid} cannot release R{resource_type}[{amount}] - only holds [{process.allocation[resource_type]}]", "error")
+                logger.log(
+                    f"P{pid} cannot release R{resource_type}[{amount}] - "
+                    f"only holds [{process.allocation[resource_type]}]",
+                    "error"
+                )
                 continue
-            
+
             # Release resources
             process.allocation[resource_type] -= amount
             system_state.resources[resource_type].available_instances += amount
             system_state.refresh_matrices()
-            
+
             logger.log(f"Step {step}: P{pid} releases R{resource_type}[{amount}]")
             event_log.add(SimulationEvent(
                 step=step,
@@ -301,8 +371,13 @@ def _process_events(
                 resource_type=resource_type,
                 amount=amount
             ))
-        
+
         elif event_type == 'finish':
+            # Skip finish event if process was already terminated
+            if process.state == ProcessState.TERMINATED:
+                logger.log(f"Step {step}: P{pid} finish event skipped (process was terminated)")
+                continue
+
             # Process explicitly finishes - release all resources
             _finish_process(process, system_state, logger, step)
             event_log.add(SimulationEvent(
@@ -313,7 +388,13 @@ def _process_events(
             ))
 
 
-def _simple_allocation(process, resource_type: int, amount: int, system_state: SystemState) -> tuple:
+def _simple_allocation(
+    process,
+    resource_type: int,
+    amount: int,
+    system_state: SystemState,
+    current_step: int = 0
+) -> tuple:
     """
     Simple allocation without safety check (for detection policies).
     Grant if request <= available.
@@ -323,6 +404,7 @@ def _simple_allocation(process, resource_type: int, amount: int, system_state: S
         resource_type: Resource type index
         amount: Amount requested
         system_state: System state
+        current_step: Current simulation step (for waiting time tracking)
         
     Returns:
         Tuple of (granted, reason)
@@ -331,27 +413,28 @@ def _simple_allocation(process, resource_type: int, amount: int, system_state: S
     need = process.max_demand[resource_type] - process.allocation[resource_type]
     if amount > need:
         return False, f"Request exceeds need (requested: {amount}, need: {need})"
-    
+
     # Check availability
     available = system_state.resources[resource_type].available_instances
     if amount > available:
         process.current_request[resource_type] = amount
-        process.state = ProcessState.WAITING
+        process.enter_waiting(current_step)
         system_state.refresh_matrices()  # Update Request Matrix
         return False, f"Insufficient resources (requested: {amount}, available: {available}) - Process enters WAITING"
-    
+
     # Grant allocation
     process.allocation[resource_type] += amount
     system_state.resources[resource_type].available_instances -= amount
     process.current_request[resource_type] = 0
     if process.state == ProcessState.WAITING:
+        process.exit_waiting(current_step)
         process.state = ProcessState.READY
-    
+
     system_state.refresh_matrices()
-    
+
     # SANITY CHECK: Verify resource conservation after grant
     system_state.assert_resource_conservation(f"after granting R{resource_type}[{amount}] to P{process.pid}")
-    
+
     return True, "GRANTED (Resources available)"
 
 
@@ -371,13 +454,13 @@ def _finish_process(process, system_state: SystemState, logger: SimulatorLogger,
             resources_str.append(f"R{i}[{amount}]")
             system_state.resources[i].available_instances += amount
             process.allocation[i] = 0
-    
+
     process.state = ProcessState.FINISHED
     system_state.refresh_matrices()
-    
+
     # SANITY CHECK: Verify resource conservation after finish
     system_state.assert_resource_conservation(f"after P{process.pid} finished")
-    
+
     resources_released = ", ".join(resources_str) if resources_str else "none"
     logger.log(f"Step {step}: P{process.pid} - FINISHED (released: {resources_released})")
 
@@ -399,16 +482,20 @@ def _verify_resource_conservation(system_state: SystemState, logger: SimulatorLo
         total_allocated = sum(p.allocation[r_idx] for p in system_state.processes)
         available = resource.available_instances
         total = resource.total_instances
-        
+
         if total_allocated + available != total:
             error_msg = (
                 f"INVARIANT VIOLATION at step {step}: "
-                f"R{r_idx} allocated={total_allocated} + available={available} = {total_allocated + available} != total={total}"
+                f"R{r_idx} allocated={total_allocated} + available={available} = "
+                f"{total_allocated + available} != total={total}"
             )
             logger.log(error_msg, "error")
             raise RuntimeError(error_msg)
         else:
-            logger.log(f"  R{r_idx} conservation check: {total_allocated} + {available} = {total} [OK]", "debug")
+            logger.log(
+                f"  R{r_idx} conservation check: {total_allocated} + {available} = {total} [OK]",
+                "debug"
+            )
 
 
 def _all_processes_finished(system_state: SystemState) -> bool:
@@ -419,13 +506,47 @@ def _all_processes_finished(system_state: SystemState) -> bool:
     )
 
 
+def _record_step_metrics(step: int, system_state: SystemState, metrics: SimulationMetrics) -> None:
+    """
+    Record metrics for the current simulation step.
+    
+    Args:
+        step: Current simulation step
+        system_state: Current system state
+        metrics: Metrics accumulator
+    """
+    # Calculate total allocated and total instances
+    total_allocated = 0
+    total_instances = 0
+    per_resource_allocated = {}
+    per_resource_total = {}
+
+    for resource in system_state.resources:
+        allocated_for_resource = sum(p.allocation[resource.type_id] for p in system_state.processes)
+        total_allocated += allocated_for_resource
+        total_instances += resource.total_instances
+
+        per_resource_allocated[resource.type_id] = allocated_for_resource
+        per_resource_total[resource.type_id] = resource.total_instances
+
+    # Record utilization for this step (including per-resource)
+    metrics.record_step(
+        step=step,
+        allocated_instances=total_allocated,
+        total_instances=total_instances,
+        waiting_processes=sum(1 for p in system_state.processes if p.state == ProcessState.WAITING),
+        per_resource_allocated=per_resource_allocated,
+        per_resource_total=per_resource_total
+    )
+
+
 def _display_initial_state(system_state: SystemState, logger: SimulatorLogger) -> None:
     """Display initial system state."""
     logger.log("Initial System State:")
     logger.log("\nProcesses:")
     for p in system_state.processes:
         logger.log(f"  P{p.pid}: priority={p.priority}, max_demand={p.max_demand}, allocation={p.allocation}")
-    
+
     logger.log("\nResources:")
     for r in system_state.resources:
         logger.log(f"  R{r.type_id}: total={r.total_instances}, available={r.available_instances}")
@@ -435,7 +556,7 @@ def _display_state_snapshot(step: int, system_state: SystemState, logger: Simula
     """Display current state snapshot."""
     logger.log("\n[State Snapshot]")
     logger.log(f"Available: {list(system_state.available_vector)}")
-    
+
     for i, p in enumerate(system_state.processes):
         alloc = list(system_state.allocation_matrix[i])
         need = list(system_state.need_matrix[i])
@@ -446,19 +567,19 @@ def _display_state_snapshot(step: int, system_state: SystemState, logger: Simula
 def _display_statistics(system_state: SystemState, event_log: EventLog, logger: SimulatorLogger) -> None:
     """Display final simulation statistics."""
     logger.log("\nSimulation Statistics:")
-    
+
     total_processes = len(system_state.processes)
     finished = sum(1 for p in system_state.processes if p.state == ProcessState.FINISHED)
     terminated = sum(1 for p in system_state.processes if p.state == ProcessState.TERMINATED)
-    
+
     logger.log(f"  Total Processes: {total_processes}")
     logger.log(f"  Finished: {finished}")
     logger.log(f"  Terminated: {terminated}")
-    
+
     allocations = len(event_log.get_events_by_type(EventType.ALLOCATION))
     denials = len(event_log.get_events_by_type(EventType.DENIAL))
     deadlocks = len(event_log.get_events_by_type(EventType.DEADLOCK))
-    
+
     logger.log(f"\n  Successful Allocations: {allocations}")
     logger.log(f"  Denials: {denials}")
     logger.log(f"  Deadlocks Detected: {deadlocks}")
@@ -467,13 +588,24 @@ def _display_statistics(system_state: SystemState, event_log: EventLog, logger: 
 def main():
     """Main entry point for the simulator."""
     parser = argparse.ArgumentParser(
-        description='Deadlock & Resource Management Simulator'
+        description='Deadlock & Resource Management Simulator',
+        epilog='''
+Examples:
+  # Single simulation with Banker's Algorithm
+  python simulator.py --policy avoidance --scenario scenarios/demo_banker.json
+  
+  # Compare all policies (demo_banker.json shows avoidance vs detection trade-offs)
+  python simulator.py --analyze --compare-policies --scenario scenarios/demo_banker.json --runs 10
+  
+  # Compare on deadlock-prone scenario (shows detection vs recovery behavior)
+  python simulator.py --analyze --compare-policies --scenario scenarios/demo_detection.json --runs 10
+        ''',
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
         '--policy',
         choices=['avoidance', 'detection_only', 'detection_with_recovery'],
-        required=True,
-        help='Deadlock handling policy to use'
+        help='Deadlock handling policy to use (required unless --compare-policies is used)'
     )
     parser.add_argument(
         '--scenario',
@@ -508,19 +640,74 @@ def main():
         default=1,
         help='Number of simulation runs for analysis (default: 1)'
     )
-    
+    parser.add_argument(
+        '--verbose-runs',
+        action='store_true',
+        help='Enable verbose output for all runs in analysis mode (default: only first run)'
+    )
+
     args = parser.parse_args()
-    
+
     # Validate arguments
     if args.compare_policies and not args.analyze:
         parser.error('--compare-policies requires --analyze')
-    
+
+    if not args.compare_policies and not args.policy:
+        parser.error('--policy is required unless --compare-policies is used')
+
     # Run simulation
     if args.analyze:
-        print("[Analysis mode not yet implemented]")
-        return 1
+        # Analysis mode - compare policies
+        print("\n" + "="*70)
+        print("PERFORMANCE ANALYSIS MODE")
+        print("="*70)
+
+        if args.compare_policies:
+            # Compare all three policies
+            policies = ['avoidance', 'detection_only', 'detection_with_recovery']
+            print(f"\nComparing policies: {', '.join([p.upper() for p in policies])}")
+        else:
+            # Analyze single policy
+            policies = [args.policy]
+            print(f"\nAnalyzing single policy: {args.policy.upper()}")
+
+        print(f"Scenario: {args.scenario}")
+        print(f"Runs per policy: {args.runs}")
+        print(f"Detection interval: {args.detect_interval}")
+        if args.verbose_runs:
+            print("Verbose: enabled for ALL runs")
+        else:
+            print("Verbose: enabled for first run only")
+        print("="*70 + "\n")
+
+        # Compare policies
+        results, all_run_results = compare_policies(
+            policies=policies,
+            scenario_path=args.scenario,
+            num_runs=args.runs,
+            detect_interval=args.detect_interval,
+            verbose_runs=args.verbose_runs,
+            run_simulation_func=run_simulation,
+            stop_reason_func=None  # Not needed, returned by run_simulation
+        )
+
+        # Generate and display report
+        report = generate_comparison_report(
+            results,
+            args.scenario,
+            args.runs
+        )
+        print(report)
+
+        return 0
     else:
-        run_simulation(args.policy, args.scenario, args.detect_interval, args.verbose)
+        # Single simulation run
+        event_log, metrics, stop_reason = run_simulation(
+            args.policy,
+            args.scenario,
+            args.detect_interval,
+            args.verbose
+        )
         return 0
 
 

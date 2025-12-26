@@ -1,0 +1,46 @@
+{
+  "description": "Test scenario with normal execution - no deadlocks, all processes finish successfully",
+  "processes": [
+    {
+      "pid": 1,
+      "priority": 1,
+      "arrival_step": 0,
+      "max_demand": [3, 3],
+      "initial_allocation": [0, 0],
+      "events": [
+        {"step": 1, "type": "request", "resource_type": 0, "amount": 2},
+        {"step": 2, "type": "request", "resource_type": 1, "amount": 2},
+        {"step": 4, "type": "release", "resource_type": 0, "amount": 1},
+        {"step": 5, "type": "finish"}
+      ]
+    },
+    {
+      "pid": 2,
+      "priority": 2,
+      "arrival_step": 0,
+      "max_demand": [2, 2],
+      "initial_allocation": [0, 0],
+      "events": [
+        {"step": 1, "type": "request", "resource_type": 1, "amount": 1},
+        {"step": 3, "type": "request", "resource_type": 0, "amount": 1},
+        {"step": 6, "type": "finish"}
+      ]
+    },
+    {
+      "pid": 3,
+      "priority": 3,
+      "arrival_step": 0,
+      "max_demand": [2, 1],
+      "initial_allocation": [0, 0],
+      "events": [
+        {"step": 2, "type": "request", "resource_type": 0, "amount": 1},
+        {"step": 3, "type": "request", "resource_type": 1, "amount": 1},
+        {"step": 7, "type": "finish"}
+      ]
+    }
+  ],
+  "resources": [
+    {"type_id": 0, "total_instances": 6},
+    {"type_id": 1, "total_instances": 5}
+  ]
+}
